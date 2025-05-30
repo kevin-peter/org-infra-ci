@@ -1,62 +1,68 @@
-name: Trigger Sonar Scans for All Repos with Config
+name: Trigger Sonar Scans for All Repos
 
 on:
   workflow_dispatch:
 
 jobs:
-  trigger-sonar:
+  sonar-scan:
     runs-on: ubuntu-latest
     permissions:
       contents: read
       actions: write
 
     steps:
-      - name: List All Repos
-        id: list
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq
+
+      - name: Get all repos in the organization
+        id: list-repos
         run: |
           gh repo list ${{ github.repository_owner }} --limit 100 --json name -q '.[].name' > repos.txt
 
-      - name: Scan & Trigger Sonar Workflows
+      - name: Loop through repos and trigger Sonar
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           while read repo; do
             echo "🔍 Checking $repo..."
 
-            # Clone repo shallowly
+            # Clone shallowly to check for files
             git clone --depth=1 https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository_owner }}/$repo temp-repo || continue
 
             cd temp-repo
 
             # Check for sonar-project.properties
-            if [ -f sonar-project.properties ]; then
-              echo "✅ Found sonar-project.properties in $repo"
-
-              # Extract projectKey (fallback = repo name)
-              PROJECT_KEY=$(grep '^sonar.projectKey=' sonar-project.properties | cut -d= -f2 | tr -d ' ')
-              PROJECT_KEY=${PROJECT_KEY:-${repo}}
-
-              # Attempt to detect language (fallback = 'java')
-              LANGUAGE=$(grep '^sonar.language=' sonar-project.properties | cut -d= -f2 | tr -d ' ')
-              LANGUAGE=${LANGUAGE:-java}
-
-              echo "📤 Triggering sonar.yml in $repo (key=$PROJECT_KEY, lang=$LANGUAGE)..."
-
-              # Check workflow exists
-              if gh workflow list --repo ${{ github.repository_owner }}/$repo | grep -q sonar.yml; then
-                gh workflow run sonar.yml \
-                  --repo ${{ github.repository_owner }}/$repo \
-                  --ref main \
-                  -f projectKey="$PROJECT_KEY" \
-                  -f language="$LANGUAGE"
-              else
-                echo "⚠️ sonar.yml not found in $repo — skipping trigger."
-              fi
-            else
-              echo "❌ No sonar-project.properties in $repo — skipping."
+            if [ ! -f sonar-project.properties ]; then
+              echo "⏭️  No sonar-project.properties found in $repo — skipping"
+              cd ..
+              rm -rf temp-repo
+              continue
             fi
+
+            # Extract details
+            PROJECT_KEY=$(grep '^sonar.projectKey=' sonar-project.properties | cut -d= -f2 | tr -d ' ')
+            PROJECT_KEY=${PROJECT_KEY:-$repo}
+            LANGUAGE=$(grep '^sonar.language=' sonar-project.properties | cut -d= -f2 | tr -d ' ')
+            LANGUAGE=${LANGUAGE:-java}
+
+            echo "✅ Config found: projectKey=$PROJECT_KEY, language=$LANGUAGE"
 
             cd ..
             rm -rf temp-repo
+
+            # Check if sonar.yml exists in the repo via GitHub API
+            if gh api repos/${{ github.repository_owner }}/$repo/contents/.github/workflows/sonar.yml --jq '.name' &> /dev/null; then
+              echo "🚀 Triggering sonar.yml in $repo..."
+
+              gh workflow run sonar.yml \
+                --repo ${{ github.repository_owner }}/$repo \
+                --ref main \
+                -f projectKey="$PROJECT_KEY" \
+                -f language="$LANGUAGE"
+            else
+              echo "⚠️ sonar.yml not found in $repo — skipping trigger"
+            fi
 
           done < repos.txt
