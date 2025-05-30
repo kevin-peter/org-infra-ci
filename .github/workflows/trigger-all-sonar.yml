@@ -1,0 +1,39 @@
+name: Trigger Sonar Scans for All Repos
+
+on:
+  workflow_dispatch:
+
+jobs:
+  trigger-scans:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Set up repository list
+        id: setup
+        run: |
+          echo 'repos<<EOF' >> $GITHUB_ENV
+          cat <<EOT >> $GITHUB_ENV
+          [
+            {"name": "project-a", "projectKey": "org.project-a", "language": "java"},
+            {"name": "project-b", "projectKey": "org.project-b", "language": "python"},
+            {"name": "project-c", "projectKey": "org.project-c", "language": "node"}
+          ]
+          EOF
+
+      - name: Trigger Sonar workflows
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "$repos" | jq -c '.[]' | while read -r repo; do
+            NAME=$(echo "$repo" | jq -r .name)
+            KEY=$(echo "$repo" | jq -r .projectKey)
+            LANG=$(echo "$repo" | jq -r .language)
+
+            echo "Triggering Sonar scan in $NAME..."
+
+            gh workflow run sonar.yml \
+              --repo ${{ github.repository_owner }}/$NAME \
+              --ref main \
+              -f projectKey="$KEY" \
+              -f language="$LANG"
+          done
