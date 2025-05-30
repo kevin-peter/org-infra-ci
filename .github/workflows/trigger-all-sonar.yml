@@ -1,10 +1,5 @@
-name: Central Sonar Scanner
-
-on:
-  workflow_dispatch:
-
 jobs:
-  scan-all:
+  sonar-scan:
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -14,28 +9,28 @@ jobs:
       SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
     steps:
-      - name: Install tools
+      - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y jq unzip curl
 
-      - name: Get list of all repos
+      - name: Get all repos in the organization
         run: |
           gh repo list ${{ github.repository_owner }} --limit 100 --json name -q '.[].name' > repos.txt
 
-      - name: Loop & Scan each repo
+      - name: Scan each repo
         run: |
-          mkdir tmp
+          mkdir workspace && cd workspace
           while read repo; do
-            echo "🔍 Scanning $repo..."
-            cd tmp
-
-            # Clone shallowly
-            git clone --depth=1 https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository_owner }}/$repo repo || { echo "❌ Failed to clone"; cd ..; continue; }
+            echo "🔍 Cloning and scanning $repo..."
+            git clone --depth=1 https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository_owner }}/$repo repo || {
+              echo "❌ Failed to clone $repo — skipping"
+              continue
+            }
 
             cd repo
 
-            # Detect language
+            # Detect language and source directory
             if [ -f "pom.xml" ]; then
               LANG="java"
               SRC="src"
@@ -46,30 +41,28 @@ jobs:
               LANG="py"
               SRC="."
             else
-              echo "⚠️  Unknown language in $repo — skipping"
-              cd ../..
+              echo "⚠️  Could not detect language in $repo — skipping"
+              cd ..
               rm -rf repo
               continue
             fi
 
-            echo "✅ Detected language: $LANG"
+            echo "✅ Language: $LANG, Source: $SRC"
 
-            # Generate sonar config
+            # Generate sonar-project.properties dynamically
             cat <<EOF > sonar-project.properties
-sonar.projectKey=${repo}
-sonar.sources=${SRC}
-sonar.language=${LANG}
+sonar.projectKey=$repo
+sonar.sources=$SRC
+sonar.language=$LANG
 EOF
 
             # Download and run sonar-scanner
             curl -sSLo sonar-scanner.zip https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-5.0.1.3006.zip
             unzip -q sonar-scanner.zip
             ./sonar-scanner-*/bin/sonar-scanner \
-              -Dsonar.projectKey=$repo \
-              -Dsonar.sources=${SRC} \
-              -Dsonar.host.url=https://your-sonarqube-server \
-              -Dsonar.login=$SONAR_TOKEN || echo "⚠️  Sonar failed for $repo"
+              -Dsonar.login=$SONAR_TOKEN \
+              -Dsonar.host.url=https://your-sonarqube-server || echo "⚠️  Sonar scan failed for $repo"
 
-            cd ../..
-            rm -rf repo
-          done < repos.txt
+            cd ..
+            rm -rf repo sonar-scanner* sonar-project.properties
+          done < ../repos.txt
