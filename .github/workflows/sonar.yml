@@ -1,4 +1,5 @@
-name: Sonar Scan
+# File: org-infra-ci/.github/workflows/sonar.yml
+name: Central SonarQube Scan
 
 on:
   workflow_call:
@@ -11,18 +12,54 @@ on:
         type: string
 
 jobs:
-  scan:
+  sonar:
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
 
-      - name: Setup language tools
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Prepare Environment for Sonar (based on language)
         run: |
+          echo "Preparing environment for: ${{ inputs.language }}"
           case "${{ inputs.language }}" in
-            java) sudo apt-get install -y openjdk-17-jdk ;;
-            python) pip install -r requirements.txt || true ;;
-            node) npm install ;;
-            *) echo "Unsupported language" && exit 1 ;;
+            java)
+              sudo apt-get update && sudo apt-get install -y openjdk-17-jdk
+              ;;
+            kotlin)
+              sudo apt-get update && sudo apt-get install -y openjdk-17-jdk
+              ;;
+            python)
+              python3 -m venv venv
+              source venv/bin/activate
+              pip install -r requirements.txt || true
+              ;;
+            node)
+              curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
+              sudo apt-get install -y nodejs
+              npm ci || npm install
+              ;;
+            dotnet)
+              echo "Installing .NET"
+              sudo apt-get update
+              sudo apt-get install -y dotnet-sdk-7.0 || true
+              ;;
+            go)
+              sudo apt-get update
+              sudo apt-get install -y golang-go
+              ;;
+            php)
+              sudo apt-get update
+              sudo apt-get install -y php php-cli
+              ;;
+            ruby)
+              sudo apt-get update
+              sudo apt-get install -y ruby-full
+              ;;
+            *)
+              echo "❌ Unsupported language: ${{ inputs.language }}"
+              exit 1
+              ;;
           esac
 
       - name: Run SonarQube Scan
