@@ -1,0 +1,32 @@
+name: Sonar Scan
+
+on:
+  workflow_call:
+    inputs:
+      projectKey:
+        required: true
+        type: string
+      language:
+        required: true
+        type: string
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup language tools
+        run: |
+          case "${{ inputs.language }}" in
+            java) sudo apt-get install -y openjdk-17-jdk ;;
+            python) pip install -r requirements.txt || true ;;
+            node) npm install ;;
+            *) echo "Unsupported language" && exit 1 ;;
+          esac
+
+      - name: Run SonarQube Scan
+        uses: SonarSource/sonarqube-scan-action@v4.0.0
+        with:
+          projectKey: ${{ inputs.projectKey }}
+          token: ${{ secrets.SONAR_TOKEN }}
