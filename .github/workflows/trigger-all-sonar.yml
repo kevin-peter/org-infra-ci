@@ -1,72 +1,75 @@
-name: Trigger Sonar Scans for All Repos
+name: Central Sonar Scanner
 
 on:
   workflow_dispatch:
 
 jobs:
-  sonar-scan:
+  scan-all:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      actions: write
 
     env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # 🔑 Required for GitHub CLI auth
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
     steps:
-      - name: Install dependencies
+      - name: Install tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y jq
+          sudo apt-get install -y jq unzip curl
 
-      - name: Get all repos in the organization
-        id: list-repos
+      - name: Get list of all repos
         run: |
           gh repo list ${{ github.repository_owner }} --limit 100 --json name -q '.[].name' > repos.txt
 
-      - name: Loop through repos and trigger Sonar if applicable
+      - name: Loop & Scan each repo
         run: |
+          mkdir tmp
           while read repo; do
-            echo "🔍 Checking $repo..."
+            echo "🔍 Scanning $repo..."
+            cd tmp
 
-            # Clone repo shallowly
-            git clone --depth=1 https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository_owner }}/$repo temp-repo || {
-              echo "❌ Failed to clone $repo — skipping"
-              continue
-            }
+            # Clone shallowly
+            git clone --depth=1 https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository_owner }}/$repo repo || { echo "❌ Failed to clone"; cd ..; continue; }
 
-            cd temp-repo
+            cd repo
 
-            # Check if sonar-project.properties exists
-            if [ ! -f sonar-project.properties ]; then
-              echo "⏭️  No sonar-project.properties in $repo — skipping"
-              cd ..
-              rm -rf temp-repo
-              continue
-            fi
-
-            # Extract sonar projectKey and language
-            PROJECT_KEY=$(grep '^sonar.projectKey=' sonar-project.properties | cut -d= -f2 | tr -d ' ')
-            PROJECT_KEY=${PROJECT_KEY:-$repo}
-            LANGUAGE=$(grep '^sonar.language=' sonar-project.properties | cut -d= -f2 | tr -d ' ')
-            LANGUAGE=${LANGUAGE:-java}
-
-            cd ..
-            rm -rf temp-repo
-
-            echo "✅ Found config in $repo — projectKey=$PROJECT_KEY, language=$LANGUAGE"
-
-            # Check if sonar.yml exists via GitHub API (not local)
-            if gh api repos/${{ github.repository_owner }}/$repo/contents/.github/workflows/sonar.yml &> /dev/null; then
-              echo "🚀 Triggering sonar.yml workflow in $repo..."
-
-              gh workflow run sonar.yml \
-                --repo ${{ github.repository_owner }}/$repo \
-                --ref main \
-                -f projectKey="$PROJECT_KEY" \
-                -f language="$LANGUAGE" || echo "⚠️ Failed to trigger sonar.yml in $repo"
+            # Detect language
+            if [ -f "pom.xml" ]; then
+              LANG="java"
+              SRC="src"
+            elif [ -f "package.json" ]; then
+              LANG="js"
+              SRC="."
+            elif ls *.py &>/dev/null; then
+              LANG="py"
+              SRC="."
             else
-              echo "❌ No sonar.yml found in $repo — skipping"
+              echo "⚠️  Unknown language in $repo — skipping"
+              cd ../..
+              rm -rf repo
+              continue
             fi
 
+            echo "✅ Detected language: $LANG"
+
+            # Generate sonar config
+            cat <<EOF > sonar-project.properties
+sonar.projectKey=${repo}
+sonar.sources=${SRC}
+sonar.language=${LANG}
+EOF
+
+            # Download and run sonar-scanner
+            curl -sSLo sonar-scanner.zip https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-5.0.1.3006.zip
+            unzip -q sonar-scanner.zip
+            ./sonar-scanner-*/bin/sonar-scanner \
+              -Dsonar.projectKey=$repo \
+              -Dsonar.sources=${SRC} \
+              -Dsonar.host.url=https://your-sonarqube-server \
+              -Dsonar.login=$SONAR_TOKEN || echo "⚠️  Sonar failed for $repo"
+
+            cd ../..
+            rm -rf repo
           done < repos.txt
